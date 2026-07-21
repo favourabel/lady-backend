@@ -1,6 +1,3 @@
-// ============================================
-// Message Model (single chat message)
-// ============================================
 const mongoose = require('mongoose');
 
 const messageSchema = new mongoose.Schema(
@@ -10,19 +7,16 @@ const messageSchema = new mongoose.Schema(
       ref: 'Conversation',
       required: true,
     },
-    // Who sent this message: 'user' or 'admin'
+    // Updated: Added 'ai' to enum
     senderType: {
       type: String,
-      enum: ['user', 'admin'],
+      enum: ['user', 'admin', 'ai'], 
       required: true,
     },
-    // Actual sender ID (either User or Admin)
     senderId: {
       type: mongoose.Schema.Types.ObjectId,
       required: true,
-      // Ref determined by senderType (User or Admin)
     },
-    // The user this conversation belongs to (for easy querying)
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
@@ -72,7 +66,7 @@ const messageSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
-    reactions: [String], // emoji reactions
+    reactions: [String], 
   },
   { timestamps: true }
 );
@@ -82,14 +76,12 @@ messageSchema.index({ conversationId: 1, createdAt: -1 });
 messageSchema.index({ userId: 1, createdAt: -1 });
 messageSchema.index({ isRead: 1, senderType: 1 });
 
-// Mark as read
 messageSchema.methods.markAsRead = function () {
   this.isRead = true;
   this.readAt = new Date();
   return this.save();
 };
 
-// Edit message
 messageSchema.methods.editMessage = function (newContent) {
   this.editHistory.push({
     content: this.content,

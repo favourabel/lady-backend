@@ -12,12 +12,29 @@ const { initializeCronJobs } = require('./cron/cronManager');
 
 const PORT = process.env.PORT || 5000;
 
+const verifyEnvVars = () => {
+  const required = ['MONGO_URI', 'GROQ_API_KEY']; // ⬅️ Change here
+  const missing = required.filter(key => !process.env[key]);
+  
+  if (missing.length > 0) {
+    console.warn(`⚠️  Warning: Missing env variables: ${missing.join(', ')}`);
+    if (missing.includes('GROQ_API_KEY')) {
+      console.warn('⚠️  AI features will not work without GROQ_API_KEY');
+    }
+  } else {
+    console.log('✅ All required environment variables loaded');
+  }
+};
+
 // Create HTTP server
 const server = http.createServer(app);
 
 // Start server
 const startServer = async () => {
   try {
+    // ✅ NEW: Check environment variables first
+    verifyEnvVars();
+
     // 1. Connect to MongoDB
     await connectDB();
 
@@ -42,6 +59,7 @@ const startServer = async () => {
       console.log(`║   Mode:    ${(process.env.NODE_ENV || 'development').padEnd(30)}  ║`);
       console.log(`║   Port:    ${String(PORT).padEnd(30)}  ║`);
       console.log(`║   URL:     http://localhost:${String(PORT).padEnd(15)}║`);
+      console.log(`║   AI:      ${(process.env.GROQ_API_KEY ? '🤖 Enabled (Groq)' : '❌ Disabled').padEnd(30)}  ║`);
       console.log(`╚════════════════════════════════════════════╝\n`);
 
       logger.info(`Server started on port ${PORT}`);

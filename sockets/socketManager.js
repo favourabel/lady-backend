@@ -9,6 +9,7 @@ const Admin = require('../models/Admin');
 const Message = require('../models/Message');
 const Conversation = require('../models/Conversation');
 const { setSocketIO, sendChatNotification } = require('../services/notificationService');
+const { getAIResponse, isAIAvailable } = require('../services/aiService'); // ✅ NEW
 const logger = require('../utils/logger');
 
 // Track online users: Map<userId, socketId>
@@ -19,6 +20,92 @@ const onlineAdmins = new Map();
 const typingUsers = new Map();
 
 let io;
+
+// ============================================
+// ✅ NEW: Helper to check if any admin is online
+// ============================================
+const isAnyAdminOnline = () => onlineAdmins.size > 0;
+
+// ============================================
+// ✅ NEW: Handle AI response (separated for clarity)
+// ============================================
+const handleAIResponse = async (conversation, userMessage, userSocket) => {
+  try {
+    logger.info(`🤖 AI processing message for user ${conversation.userId}`);
+
+    // Show "AI is typing..." indicator to user
+    io.to(`conversation:${conversation._id}`).emit('typing:update', {
+      conversationId: conversation._id.toString(),
+      userId: 'ai-assistant',
+      userType: 'ai',
+      isTyping: true,
+    });
+
+    // Get recent chat history for context
+    const chatHistory = await Message.find({
+      conversationId: conversation._id,
+      isDeleted: false,
+    })
+      .sort({ createdAt: -1 })
+      .limit(6)
+      .lean();
+
+    // Get AI response
+    const aiResponse = await getAIResponse(
+      userMessage,
+      chatHistory.reverse()
+    );
+
+    // Stop typing indicator
+    io.to(`conversation:${conversation._id}`).emit('typing:update', {
+      conversationId: conversation._id.toString(),
+      userId: 'ai-assistant',
+      userType: 'ai',
+      isTyping: false,
+    });
+
+    // Save AI message using existing Message model
+    const aiMessage = await Message.create({
+      conversationId: conversation._id,
+      senderType: 'ai',
+      // senderId is not required for AI (per updated model)
+      userId: conversation.userId,
+      content: aiResponse,
+      isAIResponse: true,
+    });
+
+    // Update conversation
+    conversation.lastMessage = aiResponse;
+    conversation.lastMessageAt = new Date();
+    conversation.lastMessageSender = 'ai';
+    conversation.unreadByAdmin += 1; // Admin should still see AI convos
+    await conversation.incrementAICount(); // Uses new helper method
+
+    // Emit AI message to conversation room
+    io.to(`conversation:${conversation._id}`).emit('message:received', {
+      message: aiMessage.toObject(),
+      conversation: conversation.toObject(),
+      isAI: true,
+    });
+
+    // Notify all admins that AI handled a message (for their awareness)
+    io.to('admins').emit('chat:ai_response', {
+      conversationId: conversation._id,
+      userId: conversation.userId,
+      preview: aiResponse.substring(0, 100),
+      handledByAI: true,
+    });
+
+    logger.info(`✅ AI response sent for conv ${conversation._id}`);
+  } catch (err) {
+    logger.error(`AI response failed: ${err.message}`);
+    
+    // Send fallback message to user
+    userSocket.emit('message:ai_failed', {
+      message: 'AI is unavailable. An admin will reply to you shortly. 💕',
+    });
+  }
+};
 
 // ============================================
 // Initialize Socket.io
@@ -94,6 +181,13 @@ const initializeSocket = (server) => {
     } else {
       socket.join('admins');
       onlineAdmins.set(userId, socket.id);
+      
+      // ✅ NEW: Notify all users that admin came online
+      io.emit('admin:status_changed', {
+        adminOnline: true,
+        totalAdmins: onlineAdmins.size,
+      });
+      logger.info(`✅ Admin ${userId} online. Total admins: ${onlineAdmins.size}`);
     }
 
     // Notify others
@@ -103,6 +197,13 @@ const initializeSocket = (server) => {
     socket.emit('users:online', {
       users: Array.from(onlineUsers.keys()),
       admins: Array.from(onlineAdmins.keys()),
+    });
+
+    // ✅ NEW: Tell client if AI is available and if admin is online
+    socket.emit('chat:status', {
+      aiAvailable: isAIAvailable(),
+      adminOnline: isAnyAdminOnline(),
+      respondingAs: isAnyAdminOnline() ? 'admin' : 'ai',
     });
 
     // ============================================
@@ -132,7 +233,7 @@ const initializeSocket = (server) => {
     });
 
     // ============================================
-    // CHAT: Send message
+    // CHAT: Send message (WITH AI INTEGRATION) ✅ UPDATED
     // ============================================
     socket.on('message:send', async (data) => {
       try {
@@ -158,7 +259,7 @@ const initializeSocket = (server) => {
           return socket.emit('error', { message: 'Conversation not found' });
         }
 
-        // Create message
+        // Create message (EXISTING LOGIC - UNCHANGED)
         const message = await Message.create({
           conversationId: conversation._id,
           senderType: userType,
@@ -168,7 +269,7 @@ const initializeSocket = (server) => {
           attachments: attachments || [],
         });
 
-        // Update conversation
+        // Update conversation (EXISTING LOGIC - UNCHANGED)
         conversation.lastMessage = content.trim();
         conversation.lastMessageAt = new Date();
         conversation.lastMessageSender = userType;
@@ -180,13 +281,13 @@ const initializeSocket = (server) => {
         }
         await conversation.save();
 
-        // Emit to conversation room
+        // Emit to conversation room (EXISTING LOGIC - UNCHANGED)
         io.to(`conversation:${conversation._id}`).emit('message:received', {
           message: message.toObject(),
           conversation: conversation.toObject(),
         });
 
-        // Notify recipient's personal room if not in conversation room
+        // Notify recipient's personal room (EXISTING LOGIC - UNCHANGED)
         if (userType === 'user') {
           // Notify all admins
           io.to('admins').emit('chat:new_message', {
@@ -195,7 +296,18 @@ const initializeSocket = (server) => {
             preview: content.trim().substring(0, 100),
             senderName: socket.user.firstName || 'User',
           });
+
+          // ✅ NEW: AI TAKES OVER IF NO ADMIN IS ONLINE
+          if (!isAnyAdminOnline() && isAIAvailable()) {
+            logger.info('👤 No admin online → 🤖 AI will respond');
+            // Handle AI response asynchronously (don't block)
+            handleAIResponse(conversation, content.trim(), socket);
+          } else if (isAnyAdminOnline()) {
+            logger.info('👨‍⚕️ Admin online → Waiting for admin reply');
+          }
+          
         } else {
+          // Admin sent the message (EXISTING LOGIC - UNCHANGED)
           // Notify the specific user
           io.to(`user:${conversation.userId}`).emit('chat:new_message', {
             conversationId: conversation._id,
@@ -221,7 +333,7 @@ const initializeSocket = (server) => {
     });
 
     // ============================================
-    // CHAT: Typing indicators
+    // CHAT: Typing indicators (UNCHANGED)
     // ============================================
     socket.on('typing:start', ({ conversationId }) => {
       if (!typingUsers.has(conversationId)) {
@@ -251,7 +363,7 @@ const initializeSocket = (server) => {
     });
 
     // ============================================
-    // CHAT: Mark as read
+    // CHAT: Mark as read (UNCHANGED)
     // ============================================
     socket.on('messages:read', async ({ conversationId }) => {
       try {
@@ -259,10 +371,15 @@ const initializeSocket = (server) => {
         if (!conversation) return;
 
         // Mark unread messages from OTHER party as read
+        // ✅ UPDATED: Include AI messages when user reads
+        const senderTypesToMark = userType === 'user' 
+          ? ['admin', 'ai']   // User marks admin AND ai messages as read
+          : ['user'];          // Admin marks user messages as read
+
         await Message.updateMany(
           {
             conversationId,
-            senderType: userType === 'user' ? 'admin' : 'user',
+            senderType: { $in: senderTypesToMark },
             isRead: false,
           },
           { isRead: true, readAt: new Date() }
@@ -288,7 +405,7 @@ const initializeSocket = (server) => {
     });
 
     // ============================================
-    // NOTIFICATIONS
+    // NOTIFICATIONS (UNCHANGED)
     // ============================================
     socket.on('notification:getCount', async () => {
       try {
@@ -304,7 +421,32 @@ const initializeSocket = (server) => {
     });
 
     // ============================================
-    // DISCONNECTION
+    // ✅ NEW: Admin manually takes over from AI
+    // ============================================
+    socket.on('admin:takeover', async ({ conversationId }) => {
+      if (userType !== 'admin') {
+        return socket.emit('error', { message: 'Only admins can take over' });
+      }
+
+      try {
+        const conversation = await Conversation.findById(conversationId);
+        if (!conversation) return;
+
+        // Notify user that admin has joined
+        io.to(`conversation:${conversationId}`).emit('admin:joined_chat', {
+          conversationId,
+          adminName: socket.user.name || 'Admin',
+          message: 'An admin has joined the conversation and will respond to your messages.',
+        });
+
+        logger.info(`Admin ${userId} took over conversation ${conversationId}`);
+      } catch (err) {
+        logger.error(`Admin takeover failed: ${err.message}`);
+      }
+    });
+
+    // ============================================
+    // DISCONNECTION (UPDATED WITH ADMIN TRACKING)
     // ============================================
     socket.on('disconnect', (reason) => {
       logger.info(`Socket disconnected: ${userType} ${userId} - ${reason}`);
@@ -313,6 +455,15 @@ const initializeSocket = (server) => {
         onlineUsers.delete(userId);
       } else {
         onlineAdmins.delete(userId);
+        
+        // ✅ NEW: Notify users if last admin went offline
+        if (onlineAdmins.size === 0) {
+          io.emit('admin:status_changed', {
+            adminOnline: false,
+            totalAdmins: 0,
+          });
+          logger.info('❌ All admins offline → AI will handle messages');
+        }
       }
 
       // Clear typing indicators
@@ -356,5 +507,6 @@ module.exports = {
   getOnlineAdmins,
   isUserOnline,
   isAdminOnline,
+  isAnyAdminOnline, // ✅ NEW: Export helper
   getIO,
 };

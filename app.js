@@ -25,12 +25,34 @@ app.use(helmet({
 app.use(compression());
 app.use(cookieParser());
 
-// CORS - Allow frontend
+// ==================== CORS (✅ UPDATED - Multiple Origins) ====================
+const allowedOrigins = [
+  'https://my-lady-seven.vercel.app',   // Production frontend (Vercel)
+  'http://localhost:5173',               // Local development (Vite)
+  'http://localhost:3000',               // Local development (alternative)
+  'http://localhost:5174',               // Local development (Vite alternate port)
+  'http://127.0.0.1:5173',              // Local via IP
+  process.env.CLIENT_URL,                // From environment variable
+].filter(Boolean); // Remove any undefined values
+
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:5173',
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, Postman, curl, etc.)
+    if (!origin) return callback(null, true);
+    
+    // Check if origin is in allowed list
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    
+    // Log blocked origins for debugging
+    console.warn(`⚠️ CORS blocked origin: ${origin}`);
+    return callback(new Error(`CORS blocked: ${origin} is not allowed`), false);
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Cookie'],
+  exposedHeaders: ['Set-Cookie'],
 }));
 
 // Body parsers
@@ -87,6 +109,7 @@ app.get('/api/health', (req, res) => {
     status: 'healthy',
     uptime: process.uptime(),
     environment: process.env.NODE_ENV,
+    aiEnabled: !!process.env.GROQ_API_KEY,  // ✅ NEW: Show if AI is ready
   });
 });
 
