@@ -362,48 +362,152 @@ const initializeSocket = (server) => {
       });
     });
 
+       // ============================================
+    // CHAT: Send message (WITH AI INTEGRATION) ✅ FIXED
     // ============================================
-    // CHAT: Mark as read (UNCHANGED)
-    // ============================================
-    socket.on('messages:read', async ({ conversationId }) => {
+    socket.on('message:send', async (data) => {
       try {
-        const conversation = await Conversation.findById(conversationId);
-        if (!conversation) return;
+        const { conversationId, content, attachments } = data;
 
-        // Mark unread messages from OTHER party as read
-        // ✅ UPDATED: Include AI messages when user reads
-        const senderTypesToMark = userType === 'user' 
-          ? ['admin', 'ai']   // User marks admin AND ai messages as read
-          : ['user'];          // Admin marks user messages as read
+        console.log(`📨 Message received from ${userType} ${userId}:`, {
+          conversationId,
+          contentPreview: content?.substring(0, 50),
+        });
 
-        await Message.updateMany(
-          {
-            conversationId,
-            senderType: { $in: senderTypesToMark },
-            isRead: false,
-          },
-          { isRead: true, readAt: new Date() }
-        );
+        if (!content || !content.trim()) {
+          return socket.emit('error', { message: 'Message cannot be empty' });
+        }
 
-        // Reset unread counter
+        let conversation = null;
+
+        // ✅ FIX: For users, ALWAYS find their existing conversation first
         if (userType === 'user') {
-          conversation.unreadByUser = 0;
+          // Find user's conversation (there should only be one per user)
+          conversation = await Conversation.findOne({ userId });
+          
+          // ONLY create if truly doesn't exist
+          if (!conversation) {
+            console.log(`🆕 Creating new conversation for user ${userId}`);
+            try {
+              conversation = await Conversation.create({
+                userId,
+                lastMessage: content.trim(),
+                lastMessageAt: new Date(),
+                lastMessageSender: userType,
+              });
+            } catch (createErr) {
+              // If creation fails (race condition), try to find again
+              if (createErr.code === 11000) {
+                console.log('⚠️ Conversation created by another process, finding it...');
+                conversation = await Conversation.findOne({ userId });
+              } else {
+                throw createErr;
+              }
+            }
+          }
         } else {
-          conversation.unreadByAdmin = 0;
+          // For admins, use the conversationId provided
+          if (conversationId) {
+            try {
+              conversation = await Conversation.findById(conversationId);
+            } catch (findErr) {
+              console.log('⚠️ Invalid conversationId');
+            }
+          }
+        }
+
+        if (!conversation) {
+          console.error('❌ No conversation found or created');
+          return socket.emit('error', { message: 'Conversation not found' });
+        }
+
+        console.log(`💬 Using conversation: ${conversation._id}`);
+
+        // ✅ Create message
+        const message = await Message.create({
+          conversationId: conversation._id,
+          senderType: userType,
+          senderId: userId,
+          userId: conversation.userId,
+          content: content.trim(),
+          attachments: attachments || [],
+        });
+
+        console.log(`✅ Message saved: ${message._id}`);
+
+        // ✅ Update conversation
+        conversation.lastMessage = content.trim();
+        conversation.lastMessageAt = new Date();
+        conversation.lastMessageSender = userType;
+
+        if (userType === 'user') {
+          conversation.unreadByAdmin += 1;
+        } else {
+          conversation.unreadByUser += 1;
         }
         await conversation.save();
 
-        // Notify sender that messages were read
-        socket.to(`conversation:${conversationId}`).emit('messages:read', {
-          conversationId,
-          readBy: userId,
-          readAt: new Date(),
+        // ✅ Emit user's message back to the sender
+        socket.emit('message:received', {
+          message: message.toObject(),
+          conversation: conversation.toObject(),
         });
+
+        // ✅ Also emit to conversation room
+        socket.to(`conversation:${conversation._id}`).emit('message:received', {
+          message: message.toObject(),
+          conversation: conversation.toObject(),
+        });
+
+        // ✅ Auto-join user to their conversation room
+        socket.join(`conversation:${conversation._id}`);
+
+        // ✅ Notify recipients
+        if (userType === 'user') {
+          // Notify all admins
+          io.to('admins').emit('chat:new_message', {
+            conversationId: conversation._id,
+            userId: conversation.userId,
+            preview: content.trim().substring(0, 100),
+            senderName: socket.user.firstName || socket.user.username || 'User',
+          });
+
+          // ✅ AI TAKES OVER IF NO ADMIN IS ONLINE
+          if (!isAnyAdminOnline() && isAIAvailable()) {
+            console.log('👤 No admin online → 🤖 AI will respond');
+            handleAIResponse(conversation, content.trim(), socket);
+          } else if (isAnyAdminOnline()) {
+            console.log('👨‍⚕️ Admin online → Waiting for admin reply');
+          }
+          
+        } else {
+          // Admin sent the message
+          io.to(`user:${conversation.userId}`).emit('chat:new_message', {
+            conversationId: conversation._id,
+            preview: content.trim().substring(0, 100),
+            senderName: socket.user.name || 'Admin',
+          });
+
+          if (!onlineUsers.has(conversation.userId.toString())) {
+            await sendChatNotification(
+              conversation.userId,
+              socket.user.name || 'Admin',
+              content.trim()
+            );
+          }
+        }
+
+        console.log(`✅ Message flow completed for conv ${conversation._id}`);
       } catch (err) {
-        logger.error(`Mark read failed: ${err.message}`);
+        console.error(`❌ Send message failed:`, err.message);
+        console.error(`❌ Error stack:`, err.stack);
+        socket.emit('error', { 
+          message: 'Failed to send message',
+          detail: err.message
+        });
       }
     });
-
+    
     // ============================================
     // NOTIFICATIONS (UNCHANGED)
     // ============================================

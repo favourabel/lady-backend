@@ -1,3 +1,6 @@
+// ============================================
+// Message Model (single chat message)
+// ============================================
 const mongoose = require('mongoose');
 
 const messageSchema = new mongoose.Schema(
@@ -7,16 +10,21 @@ const messageSchema = new mongoose.Schema(
       ref: 'Conversation',
       required: true,
     },
-    // Updated: Added 'ai' to enum
+    // Who sent this message: 'user', 'admin', or 'ai'
     senderType: {
       type: String,
-      enum: ['user', 'admin', 'ai'], 
+      enum: ['user', 'admin', 'ai'],
       required: true,
     },
+    // Actual sender ID (either User or Admin)
+    // NOT required for AI messages
     senderId: {
       type: mongoose.Schema.Types.ObjectId,
-      required: true,
+      required: function () {
+        return this.senderType !== 'ai';  // ✅ AI doesn't need senderId
+      },
     },
+    // The user this conversation belongs to
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
@@ -26,6 +34,10 @@ const messageSchema = new mongoose.Schema(
       type: String,
       required: [true, 'Message content cannot be empty'],
       maxlength: [2000, 'Message cannot exceed 2000 characters'],
+    },
+    isAIResponse: {
+      type: Boolean,
+      default: false,
     },
     attachments: [
       {
@@ -66,12 +78,11 @@ const messageSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
-    reactions: [String], 
+    reactions: [String],
   },
   { timestamps: true }
 );
 
-// Indexes
 messageSchema.index({ conversationId: 1, createdAt: -1 });
 messageSchema.index({ userId: 1, createdAt: -1 });
 messageSchema.index({ isRead: 1, senderType: 1 });
