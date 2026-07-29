@@ -47,6 +47,14 @@ const profileSchema = new mongoose.Schema(
         ],
       },
     ],
+
+      // ✅ NEW: Common symptoms captured from signup form
+      commonSymptoms: [
+     {
+    type: String,
+     },
+  ],
+
     medications: [
       {
         name: String,

@@ -6,6 +6,7 @@ const Admin = require('../models/Admin');
 const Profile = require('../models/Profile');
 const Settings = require('../models/Settings');
 const Analytics = require('../models/Analytics');
+const Cycle = require('../models/Cycle');
 const asyncHandler = require('../utils/asyncHandlers');
 const { generateToken } = require('../utils/jwt');
 const {
@@ -17,12 +18,25 @@ const { isValidEmail, sanitizeUserInput } = require('../utils/helpers');
 const logger = require('../utils/logger');
 
 // ============================================
-// @desc    Register new user
+// @desc    Register new user (with cycle info)
 // @route   POST /api/auth/signup
 // @access  Public
 // ============================================
 const register = asyncHandler(async (req, res) => {
-  let { firstName, lastName, username, email, password, passwordConfirm } = req.body;
+  let {
+    firstName,
+    lastName,
+    username,
+    email,
+    password,
+    passwordConfirm,
+    // ✅ Cycle-related fields from signup form
+    lastPeriodDate,
+    cycleLength,
+    periodLength,
+    irregularCycle,
+    commonSymptoms,
+  } = req.body;
 
   // Support both "username" (frontend) and "firstName/lastName" (admin)
   if (username && !firstName) {
@@ -63,12 +77,43 @@ const register = asyncHandler(async (req, res) => {
     password,
   });
 
+  // ✅ Prepare profile data (with symptoms + irregular cycle info)
+  const profileData = {
+    userId: user._id,
+  };
+
+  if (Array.isArray(commonSymptoms) && commonSymptoms.length > 0) {
+    profileData.commonSymptoms = commonSymptoms;
+  }
+
+  // If user marked irregular cycle → add it to medical conditions
+  if (irregularCycle === true || irregularCycle === 'yes') {
+    profileData.medicalConditions = ['Irregular cycles'];
+  }
+
   // Create associated documents
   await Promise.all([
-    Profile.create({ userId: user._id }),
+    Profile.create(profileData),
     Settings.create({ userId: user._id }),
     Analytics.create({ userId: user._id }),
   ]);
+
+  // ✅ Auto-create first Cycle entry if user provided period date
+  if (lastPeriodDate) {
+    try {
+      await Cycle.create({
+        userId: user._id,
+        startDate: new Date(lastPeriodDate),
+        cycleLength: Number(cycleLength) || 28,
+        periodDuration: Number(periodLength) || 5,
+        symptoms: [], // Cycle symptoms tracked separately from profile symptoms
+      });
+      logger.info(`Initial cycle created for user: ${user.email}`);
+    } catch (cycleErr) {
+      // Don't block signup if cycle creation fails — just log it
+      logger.error(`Failed to create initial cycle for ${user.email}: ${cycleErr.message}`);
+    }
+  }
 
   // Generate JWT token
   const token = generateToken({

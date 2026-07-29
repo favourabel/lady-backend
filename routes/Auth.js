@@ -38,6 +38,30 @@ router.post(
       }
       return true;
     }),
+    // ✅ NEW: Optional cycle validations
+    body('lastPeriodDate')
+      .optional()
+      .isISO8601()
+      .withMessage('Last period date must be a valid date'),
+    body('cycleLength')
+      .optional()
+      .isInt({ min: 15, max: 60 })
+      .withMessage('Cycle length must be between 15 and 60 days'),
+    body('periodLength')
+      .optional()
+      .isInt({ min: 2, max: 10 })
+      .withMessage('Period length must be between 2 and 10 days'),
+    body('irregularCycle')
+      .optional()
+      .custom((value) => {
+        if (typeof value === 'boolean') return true;
+        if (value === 'yes' || value === 'no') return true;
+        throw new Error('Irregular cycle must be true, false, "yes" or "no"');
+      }),
+    body('commonSymptoms')
+      .optional()
+      .isArray()
+      .withMessage('Common symptoms must be an array'),
   ],
   handleValidationErrors,
   register
