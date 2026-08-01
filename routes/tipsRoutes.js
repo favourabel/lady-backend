@@ -31,4 +31,53 @@ router.get('/health', getAllHealthTips);
 router.get('/hygiene', getAllHygieneTips);
 router.get('/inspiration', getAllInspirations);
 
+// ============================================
+// AI-Generated Daily Dashboard Data
+// ============================================
+router.get('/daily-dashboard', async (req, res) => {
+  try {
+    const prompt = `Generate realistic daily health data for a woman tracking her menstrual health. Return ONLY valid JSON in this exact format (no extra text, no markdown):
+{
+  "metrics": {
+    "waterIntake": 6,
+    "sleepHours": 7.5,
+    "exerciseMinutes": 30,
+    "calories": 1850
+  },
+  "activities": [
+    {"name": "Morning Vitamins", "time": "8:00 AM", "completed": true},
+    {"name": "Drink Water", "time": "10:00 AM", "completed": true},
+    {"name": "Healthy Lunch", "time": "12:30 PM", "completed": false},
+    {"name": "Evening Workout", "time": "6:00 PM", "completed": false}
+  ],
+  "healthTip": "Stay hydrated and listen to your body today."
+}
+
+Vary the numbers realistically (water 4-8, sleep 6-9, exercise 20-60, calories 1600-2200) and change the activities and tip each time.`;
+
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.8,
+      }),
+    });
+
+    const data = await response.json();
+    const aiContent = data.choices[0].message.content.trim();
+    const cleanedContent = aiContent.replace(/```json|```/g, '').trim();
+    const dashboardData = JSON.parse(cleanedContent);
+
+    res.json({ success: true, data: dashboardData });
+  } catch (error) {
+    console.error('AI Dashboard Error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch dashboard data' });
+  }
+});
+
 module.exports = router;

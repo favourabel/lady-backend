@@ -137,6 +137,7 @@ app.use('/api/admin/notifications', require('./routes/adminNotificationRoutes'))
 app.use('/api/admin/users', require('./routes/adminUserRoutes'));
 app.use('/api/admin/tips', require('./routes/adminTipsRoutes'));
 app.use('/api/admin/conversations', require('./routes/adminChatRoutes'));
+app.use('/api/wellness', require('./routes/wellness'));
 // ============================================================
 
 // ==================== Error Handling ====================
