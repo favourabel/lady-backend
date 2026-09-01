@@ -25,24 +25,22 @@ app.use(helmet({
 app.use(compression());
 app.use(cookieParser());
 
-// ==================== CORS (✅ UPDATED - Multiple Origins) ====================
+// ==================== CORS ====================
 const allowedOrigins = [
-  'https://my-lady-seven.vercel.app',   // Production frontend (Vercel)
-  'http://localhost:5173',               // Local development (Vite)
-  'http://localhost:3000',               // Local development (alternative)
-  'http://localhost:5174',               // Local development (Vite alternate port)
-  'http://127.0.0.1:5173',              // Local via IP
-  process.env.CLIENT_URL,                // From environment variable
+  'https://my-lady-seven.vercel.app',
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://localhost:5174',
+  'http://127.0.0.1:5173',
+  process.env.CLIENT_URL,
 ].filter(Boolean);
 
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin) return callback(null, true);
-    
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
-    
     console.warn(`⚠️ CORS blocked origin: ${origin}`);
     return callback(new Error(`CORS blocked: ${origin} is not allowed`), false);
   },
@@ -124,16 +122,13 @@ app.use('/api/cycle', require('./routes/cycleRoutes'));
 // Tips (protected)
 app.use('/api/tips', require('./routes/tipsRoutes'));
 
-// Chat & AI Advice (protected) ⬅️ ✅ ADDED THIS LINE TO FIX 404
-app.use('/api/chat', require('./routes/chatRoutes'));
-
 // Notifications (protected)
 app.use('/api/notifications', require('./routes/notificationRoutes'));
 
 // Admin Notification Routes
 app.use('/api/admin/notifications', require('./routes/adminNotificationRoutes'));
 
-// ====================== NEW ADMIN ROUTES ======================
+// ====================== ADMIN ROUTES ======================
 app.use('/api/admin/users', require('./routes/adminUserRoutes'));
 app.use('/api/admin/tips', require('./routes/adminTipsRoutes'));
 app.use('/api/admin/conversations', require('./routes/adminChatRoutes'));
