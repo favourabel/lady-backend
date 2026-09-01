@@ -9,7 +9,7 @@ const Admin = require('../models/Admin');
 const Message = require('../models/Message');
 const Conversation = require('../models/Conversation');
 const { setSocketIO, sendChatNotification } = require('../services/notificationService');
-const { getAIResponse, isAIAvailable } = require('../services/aiService'); // ✅ NEW
+const { getAIResponse, isAIAvailable } = require('../services/aiService'); // ✅ AI Integration
 const logger = require('../utils/logger');
 
 // Track online users: Map<userId, socketId>
@@ -22,12 +22,12 @@ const typingUsers = new Map();
 let io;
 
 // ============================================
-// ✅ NEW: Helper to check if any admin is online
+// Helper: check if any admin is online
 // ============================================
 const isAnyAdminOnline = () => onlineAdmins.size > 0;
 
 // ============================================
-// ✅ NEW: Handle AI response (separated for clarity)
+// Handle AI response (separated for clarity)
 // ============================================
 const handleAIResponse = async (conversation, userMessage, userSocket) => {
   try {
@@ -44,7 +44,7 @@ const handleAIResponse = async (conversation, userMessage, userSocket) => {
     // Get recent chat history for context
     const chatHistory = await Message.find({
       conversationId: conversation._id,
-      isDeleted: false,
+      isDeleted: { $ne: true },
     })
       .sort({ createdAt: -1 })
       .limit(6)
@@ -78,8 +78,14 @@ const handleAIResponse = async (conversation, userMessage, userSocket) => {
     conversation.lastMessage = aiResponse;
     conversation.lastMessageAt = new Date();
     conversation.lastMessageSender = 'ai';
-    conversation.unreadByAdmin += 1; // Admin should still see AI convos
-    await conversation.incrementAICount(); // Uses new helper method
+    conversation.unreadByAdmin = (conversation.unreadByAdmin || 0) + 1; // Admin should still see AI convos
+
+    // Use helper method if available; otherwise, save directly
+    if (typeof conversation.incrementAICount === 'function') {
+      await conversation.incrementAICount();
+    } else {
+      await conversation.save();
+    }
 
     // Emit AI message to conversation room
     io.to(`conversation:${conversation._id}`).emit('message:received', {
@@ -92,14 +98,22 @@ const handleAIResponse = async (conversation, userMessage, userSocket) => {
     io.to('admins').emit('chat:ai_response', {
       conversationId: conversation._id,
       userId: conversation.userId,
-      preview: aiResponse.substring(0, 100),
+      preview: typeof aiResponse === 'string' ? aiResponse.substring(0, 100) : '',
       handledByAI: true,
     });
 
     logger.info(`✅ AI response sent for conv ${conversation._id}`);
   } catch (err) {
     logger.error(`AI response failed: ${err.message}`);
-    
+
+    // Stop typing indicator on failure
+    io.to(`conversation:${conversation._id}`).emit('typing:update', {
+      conversationId: conversation._id.toString(),
+      userId: 'ai-assistant',
+      userType: 'ai',
+      isTyping: false,
+    });
+
     // Send fallback message to user
     userSocket.emit('message:ai_failed', {
       message: 'AI is unavailable. An admin will reply to you shortly. 💕',
@@ -114,10 +128,12 @@ const initializeSocket = (server) => {
   io = new Server(server, {
     cors: {
       origin: [
+        'https://my-lady-seven.vercel.app',
         process.env.CLIENT_URL || 'http://localhost:5173',
         'http://localhost:5173',
         'http://localhost:3000',
-      ],
+        'http://localhost:5174',
+      ].filter(Boolean),
       credentials: true,
       methods: ['GET', 'POST'],
     },
@@ -181,8 +197,8 @@ const initializeSocket = (server) => {
     } else {
       socket.join('admins');
       onlineAdmins.set(userId, socket.id);
-      
-      // ✅ NEW: Notify all users that admin came online
+
+      // Notify all users that admin came online
       io.emit('admin:status_changed', {
         adminOnline: true,
         totalAdmins: onlineAdmins.size,
@@ -199,9 +215,9 @@ const initializeSocket = (server) => {
       admins: Array.from(onlineAdmins.keys()),
     });
 
-    // ✅ NEW: Tell client if AI is available and if admin is online
+    // Tell client if AI is available and if admin is online
     socket.emit('chat:status', {
-      aiAvailable: isAIAvailable(),
+      aiAvailable: typeof isAIAvailable === 'function' ? isAIAvailable() : true,
       adminOnline: isAnyAdminOnline(),
       respondingAs: isAnyAdminOnline() ? 'admin' : 'ai',
     });
@@ -211,6 +227,7 @@ const initializeSocket = (server) => {
     // ============================================
     socket.on('conversation:join', async ({ conversationId }) => {
       try {
+        if (!conversationId) return;
         const conversation = await Conversation.findById(conversationId);
         if (!conversation) {
           return socket.emit('error', { message: 'Conversation not found' });
@@ -233,141 +250,16 @@ const initializeSocket = (server) => {
     });
 
     // ============================================
-    // CHAT: Send message (WITH AI INTEGRATION) ✅ UPDATED
+    // CHAT: Send message (SINGLE UNIFIED HANDLER)
+    // Merged from previous duplicate handlers with:
+    //  - Race condition safe conversation creation
+    //  - AI takeover when no admin online
+    //  - Auto-join sender to conversation room
+    //  - Emit to sender + others separately
     // ============================================
     socket.on('message:send', async (data) => {
       try {
-        const { conversationId, content, attachments } = data;
-
-        if (!content || !content.trim()) {
-          return socket.emit('error', { message: 'Message cannot be empty' });
-        }
-
-        let conversation = await Conversation.findById(conversationId);
-
-        // Auto-create conversation for user if it doesn't exist
-        if (!conversation && userType === 'user') {
-          conversation = await Conversation.create({
-            userId,
-            lastMessage: content,
-            lastMessageAt: new Date(),
-            lastMessageSender: userType,
-          });
-        }
-
-        if (!conversation) {
-          return socket.emit('error', { message: 'Conversation not found' });
-        }
-
-        // Create message (EXISTING LOGIC - UNCHANGED)
-        const message = await Message.create({
-          conversationId: conversation._id,
-          senderType: userType,
-          senderId: userId,
-          userId: conversation.userId,
-          content: content.trim(),
-          attachments: attachments || [],
-        });
-
-        // Update conversation (EXISTING LOGIC - UNCHANGED)
-        conversation.lastMessage = content.trim();
-        conversation.lastMessageAt = new Date();
-        conversation.lastMessageSender = userType;
-
-        if (userType === 'user') {
-          conversation.unreadByAdmin += 1;
-        } else {
-          conversation.unreadByUser += 1;
-        }
-        await conversation.save();
-
-        // Emit to conversation room (EXISTING LOGIC - UNCHANGED)
-        io.to(`conversation:${conversation._id}`).emit('message:received', {
-          message: message.toObject(),
-          conversation: conversation.toObject(),
-        });
-
-        // Notify recipient's personal room (EXISTING LOGIC - UNCHANGED)
-        if (userType === 'user') {
-          // Notify all admins
-          io.to('admins').emit('chat:new_message', {
-            conversationId: conversation._id,
-            userId: conversation.userId,
-            preview: content.trim().substring(0, 100),
-            senderName: socket.user.firstName || 'User',
-          });
-
-          // ✅ NEW: AI TAKES OVER IF NO ADMIN IS ONLINE
-          if (!isAnyAdminOnline() && isAIAvailable()) {
-            logger.info('👤 No admin online → 🤖 AI will respond');
-            // Handle AI response asynchronously (don't block)
-            handleAIResponse(conversation, content.trim(), socket);
-          } else if (isAnyAdminOnline()) {
-            logger.info('👨‍⚕️ Admin online → Waiting for admin reply');
-          }
-          
-        } else {
-          // Admin sent the message (EXISTING LOGIC - UNCHANGED)
-          // Notify the specific user
-          io.to(`user:${conversation.userId}`).emit('chat:new_message', {
-            conversationId: conversation._id,
-            preview: content.trim().substring(0, 100),
-            senderName: socket.user.name || 'Admin',
-          });
-
-          // Also send notification if user is offline
-          if (!onlineUsers.has(conversation.userId.toString())) {
-            await sendChatNotification(
-              conversation.userId,
-              socket.user.name || 'Admin',
-              content.trim()
-            );
-          }
-        }
-
-        logger.debug(`Message sent in conv ${conversation._id} by ${userType} ${userId}`);
-      } catch (err) {
-        logger.error(`Send message failed: ${err.message}`);
-        socket.emit('error', { message: 'Failed to send message' });
-      }
-    });
-
-    // ============================================
-    // CHAT: Typing indicators (UNCHANGED)
-    // ============================================
-    socket.on('typing:start', ({ conversationId }) => {
-      if (!typingUsers.has(conversationId)) {
-        typingUsers.set(conversationId, new Set());
-      }
-      typingUsers.get(conversationId).add(userId);
-
-      socket.to(`conversation:${conversationId}`).emit('typing:update', {
-        conversationId,
-        userId,
-        userType,
-        isTyping: true,
-      });
-    });
-
-    socket.on('typing:stop', ({ conversationId }) => {
-      if (typingUsers.has(conversationId)) {
-        typingUsers.get(conversationId).delete(userId);
-      }
-
-      socket.to(`conversation:${conversationId}`).emit('typing:update', {
-        conversationId,
-        userId,
-        userType,
-        isTyping: false,
-      });
-    });
-
-       // ============================================
-    // CHAT: Send message (WITH AI INTEGRATION) ✅ FIXED
-    // ============================================
-    socket.on('message:send', async (data) => {
-      try {
-        const { conversationId, content, attachments } = data;
+        const { conversationId, content, attachments } = data || {};
 
         console.log(`📨 Message received from ${userType} ${userId}:`, {
           conversationId,
@@ -380,11 +272,10 @@ const initializeSocket = (server) => {
 
         let conversation = null;
 
-        // ✅ FIX: For users, ALWAYS find their existing conversation first
+        // For users, ALWAYS find their existing conversation first
         if (userType === 'user') {
-          // Find user's conversation (there should only be one per user)
           conversation = await Conversation.findOne({ userId });
-          
+
           // ONLY create if truly doesn't exist
           if (!conversation) {
             console.log(`🆕 Creating new conversation for user ${userId}`);
@@ -423,7 +314,7 @@ const initializeSocket = (server) => {
 
         console.log(`💬 Using conversation: ${conversation._id}`);
 
-        // ✅ Create message
+        // Create message
         const message = await Message.create({
           conversationId: conversation._id,
           senderType: userType,
@@ -435,59 +326,68 @@ const initializeSocket = (server) => {
 
         console.log(`✅ Message saved: ${message._id}`);
 
-        // ✅ Update conversation
+        // Update conversation
         conversation.lastMessage = content.trim();
         conversation.lastMessageAt = new Date();
         conversation.lastMessageSender = userType;
 
         if (userType === 'user') {
-          conversation.unreadByAdmin += 1;
+          conversation.unreadByAdmin = (conversation.unreadByAdmin || 0) + 1;
         } else {
-          conversation.unreadByUser += 1;
+          conversation.unreadByUser = (conversation.unreadByUser || 0) + 1;
         }
         await conversation.save();
 
-        // ✅ Emit user's message back to the sender
+        // Emit user's message back to the sender
         socket.emit('message:received', {
           message: message.toObject(),
           conversation: conversation.toObject(),
         });
 
-        // ✅ Also emit to conversation room
+        // Also emit to conversation room (others)
         socket.to(`conversation:${conversation._id}`).emit('message:received', {
           message: message.toObject(),
           conversation: conversation.toObject(),
         });
 
-        // ✅ Auto-join user to their conversation room
+        // Auto-join sender to their conversation room
         socket.join(`conversation:${conversation._id}`);
 
-        // ✅ Notify recipients
+        // Notify recipients
         if (userType === 'user') {
           // Notify all admins
           io.to('admins').emit('chat:new_message', {
             conversationId: conversation._id,
             userId: conversation.userId,
             preview: content.trim().substring(0, 100),
-            senderName: socket.user.firstName || socket.user.username || 'User',
+            senderName:
+              socket.user.firstName ||
+              socket.user.username ||
+              socket.user.name ||
+              'User',
           });
 
-          // ✅ AI TAKES OVER IF NO ADMIN IS ONLINE
-          if (!isAnyAdminOnline() && isAIAvailable()) {
+          // AI TAKES OVER IF NO ADMIN IS ONLINE
+          const aiReady =
+            typeof isAIAvailable === 'function' ? isAIAvailable() : true;
+
+          if (!isAnyAdminOnline() && aiReady) {
             console.log('👤 No admin online → 🤖 AI will respond');
+            // Handle AI response asynchronously (don't block)
             handleAIResponse(conversation, content.trim(), socket);
           } else if (isAnyAdminOnline()) {
             console.log('👨‍⚕️ Admin online → Waiting for admin reply');
           }
-          
         } else {
           // Admin sent the message
+          // Notify the specific user
           io.to(`user:${conversation.userId}`).emit('chat:new_message', {
             conversationId: conversation._id,
             preview: content.trim().substring(0, 100),
             senderName: socket.user.name || 'Admin',
           });
 
+          // Also send notification if user is offline
           if (!onlineUsers.has(conversation.userId.toString())) {
             await sendChatNotification(
               conversation.userId,
@@ -501,15 +401,47 @@ const initializeSocket = (server) => {
       } catch (err) {
         console.error(`❌ Send message failed:`, err.message);
         console.error(`❌ Error stack:`, err.stack);
-        socket.emit('error', { 
+        socket.emit('error', {
           message: 'Failed to send message',
-          detail: err.message
+          detail: err.message,
         });
       }
     });
-    
+
     // ============================================
-    // NOTIFICATIONS (UNCHANGED)
+    // CHAT: Typing indicators
+    // ============================================
+    socket.on('typing:start', ({ conversationId }) => {
+      if (!conversationId) return;
+      if (!typingUsers.has(conversationId)) {
+        typingUsers.set(conversationId, new Set());
+      }
+      typingUsers.get(conversationId).add(userId);
+
+      socket.to(`conversation:${conversationId}`).emit('typing:update', {
+        conversationId,
+        userId,
+        userType,
+        isTyping: true,
+      });
+    });
+
+    socket.on('typing:stop', ({ conversationId }) => {
+      if (!conversationId) return;
+      if (typingUsers.has(conversationId)) {
+        typingUsers.get(conversationId).delete(userId);
+      }
+
+      socket.to(`conversation:${conversationId}`).emit('typing:update', {
+        conversationId,
+        userId,
+        userType,
+        isTyping: false,
+      });
+    });
+
+    // ============================================
+    // NOTIFICATIONS
     // ============================================
     socket.on('notification:getCount', async () => {
       try {
@@ -525,7 +457,7 @@ const initializeSocket = (server) => {
     });
 
     // ============================================
-    // ✅ NEW: Admin manually takes over from AI
+    // Admin manually takes over from AI
     // ============================================
     socket.on('admin:takeover', async ({ conversationId }) => {
       if (userType !== 'admin') {
@@ -540,7 +472,8 @@ const initializeSocket = (server) => {
         io.to(`conversation:${conversationId}`).emit('admin:joined_chat', {
           conversationId,
           adminName: socket.user.name || 'Admin',
-          message: 'An admin has joined the conversation and will respond to your messages.',
+          message:
+            'An admin has joined the conversation and will respond to your messages.',
         });
 
         logger.info(`Admin ${userId} took over conversation ${conversationId}`);
@@ -550,7 +483,7 @@ const initializeSocket = (server) => {
     });
 
     // ============================================
-    // DISCONNECTION (UPDATED WITH ADMIN TRACKING)
+    // DISCONNECTION (WITH ADMIN TRACKING)
     // ============================================
     socket.on('disconnect', (reason) => {
       logger.info(`Socket disconnected: ${userType} ${userId} - ${reason}`);
@@ -559,8 +492,8 @@ const initializeSocket = (server) => {
         onlineUsers.delete(userId);
       } else {
         onlineAdmins.delete(userId);
-        
-        // ✅ NEW: Notify users if last admin went offline
+
+        // Notify users if last admin went offline
         if (onlineAdmins.size === 0) {
           io.emit('admin:status_changed', {
             adminOnline: false,
@@ -611,6 +544,6 @@ module.exports = {
   getOnlineAdmins,
   isUserOnline,
   isAdminOnline,
-  isAnyAdminOnline, // ✅ NEW: Export helper
+  isAnyAdminOnline,
   getIO,
 };
