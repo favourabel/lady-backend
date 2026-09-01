@@ -33,19 +33,16 @@ const allowedOrigins = [
   'http://localhost:5174',               // Local development (Vite alternate port)
   'http://127.0.0.1:5173',              // Local via IP
   process.env.CLIENT_URL,                // From environment variable
-].filter(Boolean); // Remove any undefined values
+].filter(Boolean);
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (mobile apps, Postman, curl, etc.)
     if (!origin) return callback(null, true);
     
-    // Check if origin is in allowed list
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
     
-    // Log blocked origins for debugging
     console.warn(`⚠️ CORS blocked origin: ${origin}`);
     return callback(new Error(`CORS blocked: ${origin} is not allowed`), false);
   },
@@ -67,26 +64,26 @@ if (process.env.NODE_ENV !== 'production') {
   app.use(morgan('dev'));
 }
 
-// Rate limiter (generous limit; GET requests skipped, strict limit only for auth)
+// Rate limiter
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,   // 15 minutes
-  max: 1000,                   // ✅ raised from 100 → 1000
+  windowMs: 15 * 60 * 1000,
+  max: 1000,
   message: { success: false, message: 'Too many requests, please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
-  skip: (req) => req.method === 'GET',  // ✅ don't rate-limit read requests
+  skip: (req) => req.method === 'GET',
 });
 
-// Strict limiter for auth endpoints (prevents brute-force login attacks)
+// Strict limiter for auth endpoints
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 20,   // 20 login/register attempts per 15 min per IP
+  max: 20,
   message: { success: false, message: 'Too many authentication attempts, please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
 });
 
-// Apply strict limiter FIRST to auth routes (order matters)
+// Apply strict limiter FIRST to auth routes
 app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/register', authLimiter);
 
@@ -109,7 +106,7 @@ app.get('/api/health', (req, res) => {
     status: 'healthy',
     uptime: process.uptime(),
     environment: process.env.NODE_ENV,
-    aiEnabled: !!process.env.GROQ_API_KEY,  // ✅ NEW: Show if AI is ready
+    aiEnabled: !!process.env.GROQ_API_KEY,
   });
 });
 
@@ -127,10 +124,13 @@ app.use('/api/cycle', require('./routes/cycleRoutes'));
 // Tips (protected)
 app.use('/api/tips', require('./routes/tipsRoutes'));
 
+// Chat & AI Advice (protected) ⬅️ ✅ ADDED THIS LINE TO FIX 404
+app.use('/api/chat', require('./routes/chatRoutes'));
+
 // Notifications (protected)
 app.use('/api/notifications', require('./routes/notificationRoutes'));
 
-// Admin Notification Routes (Send, List Sent, Delete)
+// Admin Notification Routes
 app.use('/api/admin/notifications', require('./routes/adminNotificationRoutes'));
 
 // ====================== NEW ADMIN ROUTES ======================

@@ -69,6 +69,13 @@ Vary the numbers realistically (water 4-8, sleep 6-9, exercise 20-60, calories 1
     });
 
     const data = await response.json();
+
+    // ✅ FIX: Check if Groq returned an error or if choices is missing
+    if (!response.ok || !data.choices || !data.choices[0]) {
+      console.error('Groq API Error Details:', data.error || data);
+      throw new Error(data.error?.message || 'Failed to get valid response from AI provider');
+    }
+
     const aiContent = data.choices[0].message.content.trim();
     const cleanedContent = aiContent.replace(/```json|```/g, '').trim();
     const dashboardData = JSON.parse(cleanedContent);
@@ -76,7 +83,7 @@ Vary the numbers realistically (water 4-8, sleep 6-9, exercise 20-60, calories 1
     res.json({ success: true, data: dashboardData });
   } catch (error) {
     console.error('AI Dashboard Error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch dashboard data' });
+    res.status(500).json({ success: false, message: error.message || 'Failed to fetch dashboard data' });
   }
 });
 
