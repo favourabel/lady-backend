@@ -27,13 +27,14 @@ let io;
 const isAnyAdminOnline = () => onlineAdmins.size > 0;
 
 // ============================================
-// Handle AI response (separated for clarity)
+// Handle AI response (Resilient with explicit fallbacks & logs)
 // ============================================
 const handleAIResponse = async (conversation, userMessage, userSocket) => {
   try {
+    console.log(`🤖 AI started processing message for user ${conversation.userId} (conv ${conversation._id})`);
     logger.info(`🤖 AI processing message for user ${conversation.userId}`);
 
-    // Show "AI is typing..." indicator to user
+    // 1. Show "AI is typing..." indicator to user
     io.to(`conversation:${conversation._id}`).emit('typing:update', {
       conversationId: conversation._id.toString(),
       userId: 'ai-assistant',
@@ -41,22 +42,37 @@ const handleAIResponse = async (conversation, userMessage, userSocket) => {
       isTyping: true,
     });
 
-    // Get recent chat history for context
-    const chatHistory = await Message.find({
-      conversationId: conversation._id,
-      isDeleted: { $ne: true },
-    })
-      .sort({ createdAt: -1 })
-      .limit(6)
-      .lean();
+    // 2. Fetch recent chat history safely
+    let chatHistory = [];
+    try {
+      chatHistory = await Message.find({
+        conversationId: conversation._id,
+        isDeleted: { $ne: true },
+      })
+        .sort({ createdAt: -1 })
+        .limit(6)
+        .lean();
+    } catch (historyErr) {
+      console.warn('⚠️ Could not fetch chat history for AI context:', historyErr.message);
+    }
 
-    // Get AI response
-    const aiResponse = await getAIResponse(
-      userMessage,
-      chatHistory.reverse()
-    );
+    // 3. Query AI Service (Groq)
+    let aiResponseText = null;
+    try {
+      if (typeof getAIResponse === 'function') {
+        aiResponseText = await getAIResponse(userMessage, chatHistory.reverse());
+      }
+    } catch (aiErr) {
+      console.error(`❌ Groq/AI Service call failed: ${aiErr.message}`);
+    }
 
-    // Stop typing indicator
+    // 4. Fallback AI Response if Groq failed or returned empty text
+    if (!aiResponseText || typeof aiResponseText !== 'string' || !aiResponseText.trim()) {
+      console.warn('⚠️ AI service returned empty or failed. Using fallback health response.');
+      aiResponseText = "I am here to support your wellness! Please make sure to drink plenty of water, rest, and keep track of your symptoms. If your pain or discomfort is severe, please reach out to a healthcare professional. 💕";
+    }
+
+    // 5. Stop typing indicator
     io.to(`conversation:${conversation._id}`).emit('typing:update', {
       conversationId: conversation._id.toString(),
       userId: 'ai-assistant',
@@ -64,18 +80,17 @@ const handleAIResponse = async (conversation, userMessage, userSocket) => {
       isTyping: false,
     });
 
-    // Save AI message using existing Message model
+    // 6. Save AI message using existing Message model
     const aiMessage = await Message.create({
       conversationId: conversation._id,
       senderType: 'ai',
-      // senderId is not required for AI (per updated model)
       userId: conversation.userId,
-      content: aiResponse,
+      content: aiResponseText.trim(),
       isAIResponse: true,
     });
 
-    // Update conversation
-    conversation.lastMessage = aiResponse;
+    // 7. Update conversation metadata
+    conversation.lastMessage = aiResponseText.trim();
     conversation.lastMessageAt = new Date();
     conversation.lastMessageSender = 'ai';
     conversation.unreadByAdmin = (conversation.unreadByAdmin || 0) + 1; // Admin should still see AI convos
@@ -87,23 +102,24 @@ const handleAIResponse = async (conversation, userMessage, userSocket) => {
       await conversation.save();
     }
 
-    // Emit AI message to conversation room
+    // 8. Emit AI message to conversation room so frontend receives & renders it live
     io.to(`conversation:${conversation._id}`).emit('message:received', {
       message: aiMessage.toObject(),
       conversation: conversation.toObject(),
       isAI: true,
     });
 
-    // Notify all admins that AI handled a message (for their awareness)
+    // 9. Notify all admins that AI handled a message (for their awareness)
     io.to('admins').emit('chat:ai_response', {
       conversationId: conversation._id,
       userId: conversation.userId,
-      preview: typeof aiResponse === 'string' ? aiResponse.substring(0, 100) : '',
+      preview: aiResponseText.trim().substring(0, 100),
       handledByAI: true,
     });
 
-    logger.info(`✅ AI response sent for conv ${conversation._id}`);
+    console.log(`✅ AI response successfully sent for conv ${conversation._id}`);
   } catch (err) {
+    console.error(`❌ Critical error in handleAIResponse:`, err.message);
     logger.error(`AI response failed: ${err.message}`);
 
     // Stop typing indicator on failure
@@ -114,7 +130,7 @@ const handleAIResponse = async (conversation, userMessage, userSocket) => {
       isTyping: false,
     });
 
-    // Send fallback message to user
+    // Send fallback socket message to user
     userSocket.emit('message:ai_failed', {
       message: 'AI is unavailable. An admin will reply to you shortly. 💕',
     });
