@@ -108,6 +108,48 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// ==================== AI Advice Chat Route ====================
+app.post('/api/chat/ai-advice', async (req, res) => {
+  try {
+    const userMessage = req.body.message || req.body.prompt || "Hello";
+    
+    if (!process.env.GROQ_API_KEY) {
+      return res.json({
+        success: true,
+        reply: "I am here to support you with your health and menstrual wellness. Please ensure you rest and stay hydrated!",
+      });
+    }
+
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        messages: [
+          { role: 'system', content: 'You are a warm, supportive, and knowledgeable women’s health and menstrual wellness AI assistant.' },
+          { role: 'user', content: userMessage }
+        ],
+        temperature: 0.7,
+      }),
+    });
+
+    const data = await response.json();
+    const reply = data?.choices?.[0]?.message?.content || "Take care of yourself today. Remember to drink plenty of fluids and rest.";
+    
+    return res.json({ success: true, reply, advice: reply });
+  } catch (error) {
+    console.error('AI Advice Route Error:', error.message);
+    return res.json({
+      success: true,
+      reply: "I am currently running in offline mode. Stay hydrated, listen to your body, and consult a doctor if you feel persistent pain.",
+      advice: "I am currently running in offline mode. Stay hydrated, listen to your body, and consult a doctor if you feel persistent pain."
+    });
+  }
+});
+
 // ==================== API Routes ====================
 
 // Auth (public + protected)

@@ -35,7 +35,28 @@ router.get('/inspiration', getAllInspirations);
 // AI-Generated Daily Dashboard Data
 // ============================================
 router.get('/daily-dashboard', async (req, res) => {
+  // Default fallback data if Groq is slow, rate-limited, or unavailable
+  const fallbackData = {
+    metrics: {
+      waterIntake: 6,
+      sleepHours: 7.5,
+      exerciseMinutes: 30,
+      calories: 1850
+    },
+    activities: [
+      { name: "Morning Vitamins", time: "8:00 AM", completed: true },
+      { name: "Drink Water", time: "10:00 AM", completed: true },
+      { name: "Healthy Lunch", time: "12:30 PM", completed: false },
+      { name: "Evening Workout", time: "6:00 PM", completed: false }
+    ],
+    healthTip: "Stay hydrated and listen to your body today."
+  };
+
   try {
+    if (!process.env.GROQ_API_KEY) {
+      return res.json({ success: true, data: fallbackData });
+    }
+
     const prompt = `Generate realistic daily health data for a woman tracking her menstrual health. Return ONLY valid JSON in this exact format (no extra text, no markdown):
 {
   "metrics": {
@@ -70,20 +91,20 @@ Vary the numbers realistically (water 4-8, sleep 6-9, exercise 20-60, calories 1
 
     const data = await response.json();
 
-    // ✅ FIX: Check if Groq returned an error or if choices is missing
     if (!response.ok || !data.choices || !data.choices[0]) {
-      console.error('Groq API Error Details:', data.error || data);
-      throw new Error(data.error?.message || 'Failed to get valid response from AI provider');
+      console.warn('⚠️ Groq returned fallback for dashboard:', data.error?.message || 'No choices');
+      return res.json({ success: true, data: fallbackData });
     }
 
     const aiContent = data.choices[0].message.content.trim();
     const cleanedContent = aiContent.replace(/```json|```/g, '').trim();
     const dashboardData = JSON.parse(cleanedContent);
 
-    res.json({ success: true, data: dashboardData });
+    return res.json({ success: true, data: dashboardData });
   } catch (error) {
-    console.error('AI Dashboard Error:', error);
-    res.status(500).json({ success: false, message: error.message || 'Failed to fetch dashboard data' });
+    console.error('AI Dashboard Non-fatal Error:', error.message);
+    // Graceful fallback prevents 500 error on frontend
+    return res.json({ success: true, data: fallbackData });
   }
 });
 
